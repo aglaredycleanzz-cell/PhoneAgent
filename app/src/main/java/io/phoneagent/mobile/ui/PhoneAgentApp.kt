@@ -85,6 +85,7 @@ import io.phoneagent.mobile.data.AgentTask
 import io.phoneagent.mobile.data.ChatMessage
 import io.phoneagent.mobile.data.LocalCompanion
 import io.phoneagent.mobile.data.TaskStore
+import io.phoneagent.mobile.data.TaskStatus
 
 private enum class MainTab {
     CHAT, ACTIVITY, SAFETY
@@ -143,7 +144,7 @@ fun PhoneAgentApp(taskStore: TaskStore) {
         if (clean.isNotBlank()) {
             taskStore.addConversationMessage(selectedPersonaId, clean, isUser = true)
             val actionable = LocalCompanion.isActionRequest(clean)
-            val savedTask = if (actionable) taskStore.addDraft(clean) else null
+            val savedTask = if (actionable) taskStore.addDraft(clean, selectedPersonaId) else null
             val reply = LocalCompanion.reply(
                 companionId = selectedPersonaId,
                 userText = clean,
@@ -211,7 +212,7 @@ fun PhoneAgentApp(taskStore: TaskStore) {
                         onChoosePersona = { selectedPersonaId = it },
                         onQuickPrompt = { composerText = it }
                     )
-                    MainTab.ACTIVITY -> ActivityScreen(tasks = tasks)
+                    MainTab.ACTIVITY -> ActivityScreen(tasks = tasks, taskStore = taskStore, onTasksChanged = { tasks = taskStore.loadTasks() })
                     MainTab.SAFETY -> SafetyScreen()
                 }
             }
@@ -801,38 +802,32 @@ private fun ChatComposer(
 
 private fun currentPersonaLabel(value: String, fallback: String): String = fallback
 
+
 @Composable
-private fun ActivityScreen(tasks: List<AgentTask>) {
+private fun ActivityScreen(
+    tasks: List<AgentTask>,
+    taskStore: TaskStore,
+    onTasksChanged: () -> Unit
+) {
+    var expandedTaskId by rememberSaveable { mutableStateOf("") }
+    val draftCount = tasks.count { it.status == TaskStatus.DRAFT }
+    val reviewCount = tasks.count { it.status == TaskStatus.NEEDS_APPROVAL }
+    val waitingCount = tasks.count { it.status == TaskStatus.APPROVED_WAITING_FOR_ENGINE }
+
     Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .verticalScroll(rememberScrollState())
-            .padding(horizontal = 18.dp)
-            .padding(top = 15.dp, bottom = 22.dp),
+        modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState())
+            .padding(horizontal = 18.dp).padding(top = 15.dp, bottom = 22.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
         AppHeader()
         Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-            Text("مركز النشاط", color = AgentPalette.TextPrimary, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
-            Text("ما يرسله الحوار يظهر هنا. التنفيذ الحقيقي لم يُفعّل بعد.", color = AgentPalette.TextSecondary, style = MaterialTheme.typography.bodySmall)
+            Text("مركز المهام", color = AgentPalette.TextPrimary, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
+            Text("خطّة، مراجعة، موافقة، ثم تنفيذ عند توفر المحرك.", color = AgentPalette.TextSecondary, style = MaterialTheme.typography.bodySmall)
         }
-        Surface(
-            shape = RoundedCornerShape(25.dp),
-            color = AgentPalette.Surface,
-            border = BorderStroke(1.dp, AgentPalette.Border)
-        ) {
-            Column(
-                modifier = Modifier.padding(18.dp),
-                verticalArrangement = Arrangement.spacedBy(12.dp)
-            ) {
+        Surface(shape = RoundedCornerShape(25.dp), color = AgentPalette.Surface, border = BorderStroke(1.dp, AgentPalette.Border)) {
+            Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Box(
-                        modifier = Modifier
-                            .size(43.dp)
-                            .clip(RoundedCornerShape(14.dp))
-                            .background(AgentPalette.Amber.copy(alpha = 0.13f)),
-                        contentAlignment = Alignment.Center
-                    ) {
+                    Box(Modifier.size(43.dp).clip(RoundedCornerShape(14.dp)).background(AgentPalette.Amber.copy(alpha = 0.13f)), contentAlignment = Alignment.Center) {
                         Icon(Icons.Outlined.Terminal, contentDescription = null, tint = AgentPalette.Amber)
                     }
                     Spacer(Modifier.width(11.dp))
@@ -843,17 +838,21 @@ private fun ActivityScreen(tasks: List<AgentTask>) {
                 }
                 HorizontalDivider(color = AgentPalette.Border)
                 Text(
-                    "تُسجّل الأوامر العملية التي ترسلها كمسودات محلية فقط. عند ربط محرك التنفيذ لاحقًا، سيُعرض هنا تقدّم العمل والنتيجة والأخطاء والإلغاء.",
-                    color = AgentPalette.TextSecondary,
-                    style = MaterialTheme.typography.bodyMedium,
-                    lineHeight = 21.sp
+                    "يمكنك مراجعة الخطة واعتمادها. الاعتماد يسجّل قرارك فقط؛ لا ينفّذ نقرات ولا يشغّل تطبيقات حتى نربط محركًا حقيقيًا.",
+                    color = AgentPalette.TextSecondary, style = MaterialTheme.typography.bodyMedium, lineHeight = 21.sp
                 )
             }
         }
         Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            ActivityMetric(modifier = Modifier.weight(1f), value = tasks.size.toString(), label = "مسودات", icon = { Icon(Icons.Outlined.History, contentDescription = null, tint = AgentPalette.Sky) })
-            ActivityMetric(modifier = Modifier.weight(1f), value = "0", label = "قيد التنفيذ", icon = { Icon(Icons.Outlined.Bolt, contentDescription = null, tint = AgentPalette.Amber) })
-            ActivityMetric(modifier = Modifier.weight(1f), value = "0", label = "مكتمل", icon = { Icon(Icons.Outlined.CheckCircle, contentDescription = null, tint = AgentPalette.Mint) })
+            ActivityMetric(Modifier.weight(1f), draftCount.toString(), "مسودات") {
+                Icon(Icons.Outlined.History, contentDescription = null, tint = AgentPalette.Sky)
+            }
+            ActivityMetric(Modifier.weight(1f), reviewCount.toString(), "تحتاج مراجعة") {
+                Icon(Icons.Outlined.Tune, contentDescription = null, tint = AgentPalette.Amber)
+            }
+            ActivityMetric(Modifier.weight(1f), waitingCount.toString(), "تنتظر المحرك") {
+                Icon(Icons.Outlined.Lock, contentDescription = null, tint = AgentPalette.Mint)
+            }
         }
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text("سجل الطلبات", color = AgentPalette.TextPrimary, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
@@ -861,25 +860,25 @@ private fun ActivityScreen(tasks: List<AgentTask>) {
             Text("محلي فقط", color = AgentPalette.TextSecondary, style = MaterialTheme.typography.labelSmall)
         }
         if (tasks.isEmpty()) {
-            Surface(
-                shape = RoundedCornerShape(20.dp),
-                color = AgentPalette.Surface,
-                border = BorderStroke(1.dp, AgentPalette.Border)
-            ) {
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(22.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
+            Surface(shape = RoundedCornerShape(20.dp), color = AgentPalette.Surface, border = BorderStroke(1.dp, AgentPalette.Border)) {
+                Column(Modifier.fillMaxWidth().padding(22.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Icon(Icons.Outlined.History, contentDescription = null, tint = AgentPalette.TextSecondary, modifier = Modifier.size(29.dp))
                     Text("لا توجد طلبات محفوظة", color = AgentPalette.TextPrimary, fontWeight = FontWeight.SemiBold)
-                    Text("عندما ترسل طلبًا عمليًا في الحوار سيظهر هنا كمسودة.", color = AgentPalette.TextSecondary, style = MaterialTheme.typography.bodySmall)
+                    Text("أرسل طلبًا عمليًا في الحوار لبدء أول بطاقة مهمة.", color = AgentPalette.TextSecondary, style = MaterialTheme.typography.bodySmall)
                 }
             }
         } else {
-            tasks.forEach { task -> DraftActivityRow(task) }
+            tasks.forEach { task ->
+                TaskJournalCard(
+                    task = task,
+                    expanded = expandedTaskId == task.id,
+                    onToggleExpanded = { expandedTaskId = if (expandedTaskId == task.id) "" else task.id },
+                    onAdvanceReview = {
+                        taskStore.advanceReviewStage(task.id)
+                        onTasksChanged()
+                    }
+                )
+            }
         }
     }
 }
@@ -891,23 +890,9 @@ private fun ActivityMetric(
     label: String,
     icon: @Composable () -> Unit
 ) {
-    Surface(
-        modifier = modifier,
-        shape = RoundedCornerShape(19.dp),
-        color = AgentPalette.Surface,
-        border = BorderStroke(1.dp, AgentPalette.Border)
-    ) {
-        Column(
-            modifier = Modifier.padding(13.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            Box(
-                Modifier
-                    .size(29.dp)
-                    .clip(RoundedCornerShape(9.dp))
-                    .background(AgentPalette.SurfaceSoft),
-                contentAlignment = Alignment.Center
-            ) { icon() }
+    Surface(modifier, RoundedCornerShape(19.dp), AgentPalette.Surface, border = BorderStroke(1.dp, AgentPalette.Border)) {
+        Column(Modifier.padding(13.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Box(Modifier.size(29.dp).clip(RoundedCornerShape(9.dp)).background(AgentPalette.SurfaceSoft), contentAlignment = Alignment.Center) { icon() }
             Text(value, color = AgentPalette.TextPrimary, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
             Text(label, color = AgentPalette.TextSecondary, style = MaterialTheme.typography.labelSmall)
         }
@@ -915,45 +900,118 @@ private fun ActivityMetric(
 }
 
 @Composable
-private fun DraftActivityRow(task: AgentTask) {
+private fun TaskJournalCard(task: AgentTask, expanded: Boolean, onToggleExpanded: () -> Unit, onAdvanceReview: () -> Unit) {
+    val accent = taskStatusAccent(task.status)
     Surface(
-        shape = RoundedCornerShape(19.dp),
+        modifier = Modifier.fillMaxWidth().clickable(onClick = onToggleExpanded),
+        shape = RoundedCornerShape(22.dp),
         color = AgentPalette.Surface,
-        border = BorderStroke(1.dp, AgentPalette.Border)
+        border = BorderStroke(1.dp, if (expanded) accent.copy(alpha = 0.55f) else AgentPalette.Border)
     ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(14.dp),
-            verticalAlignment = Alignment.Top,
-            horizontalArrangement = Arrangement.spacedBy(11.dp)
-        ) {
-            Box(
-                Modifier
-                    .size(38.dp)
-                    .clip(RoundedCornerShape(12.dp))
-                    .background(AgentPalette.SurfaceSoft),
-                contentAlignment = Alignment.Center
-            ) {
-                Icon(Icons.Outlined.Tune, contentDescription = null, tint = AgentPalette.Sky)
+        Column(Modifier.padding(15.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Row(verticalAlignment = Alignment.Top, horizontalArrangement = Arrangement.spacedBy(11.dp)) {
+                Box(Modifier.size(42.dp).clip(RoundedCornerShape(13.dp)).background(accent.copy(alpha = 0.13f)), contentAlignment = Alignment.Center) {
+                    Icon(Icons.Outlined.Tune, contentDescription = null, tint = accent)
+                }
+                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text(task.title, color = AgentPalette.TextPrimary, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
+                    Text(task.companionId.uppercase() + " • " + java.text.SimpleDateFormat("dd/MM HH:mm", java.util.Locale.getDefault()).format(java.util.Date(task.createdAtEpochMillis)), color = AgentPalette.TextSecondary, style = MaterialTheme.typography.labelSmall)
+                }
+                Surface(shape = RoundedCornerShape(10.dp), color = accent.copy(alpha = 0.13f)) {
+                    Text(taskStatusLabel(task.status), Modifier.padding(horizontal = 9.dp, vertical = 6.dp), color = accent, style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.SemiBold)
+                }
             }
-            Column(
-                modifier = Modifier.weight(1f),
-                verticalArrangement = Arrangement.spacedBy(6.dp)
-            ) {
-                Text(task.title, color = AgentPalette.TextPrimary, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
-                Text(
-                    java.text.SimpleDateFormat("dd/MM  HH:mm", java.util.Locale.getDefault())
-                        .format(java.util.Date(task.createdAtEpochMillis)),
-                    color = AgentPalette.TextSecondary,
-                    style = MaterialTheme.typography.labelSmall
-                )
-            }
-            Surface(shape = RoundedCornerShape(9.dp), color = AgentPalette.MintDeep) {
-                Text("مسودة", modifier = Modifier.padding(horizontal = 8.dp, vertical = 5.dp), color = AgentPalette.Mint, style = MaterialTheme.typography.labelSmall)
+            if (!expanded) {
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    Text("${task.plan.size} خطوات مخططة • ${task.history.size} أحداث في السجل", color = AgentPalette.TextSecondary, style = MaterialTheme.typography.labelSmall)
+                    Spacer(Modifier.weight(1f))
+                    Icon(Icons.Outlined.ChevronLeft, contentDescription = "عرض التفاصيل", tint = AgentPalette.TextSecondary)
+                }
+            } else {
+                HorizontalDivider(color = AgentPalette.Border)
+                Text("خطة أولية — ليست أوامر قابلة للتنفيذ", color = AgentPalette.Sky, style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.Bold)
+                task.plan.forEachIndexed { index, step ->
+                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.Top) {
+                        Box(Modifier.size(27.dp).clip(CircleShape).background(AgentPalette.SurfaceSoft), contentAlignment = Alignment.Center) {
+                            Text((index + 1).toString(), color = AgentPalette.TextSecondary, style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold)
+                        }
+                        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                            Text(step.title, color = AgentPalette.TextPrimary, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
+                            Text(step.detail, color = AgentPalette.TextSecondary, style = MaterialTheme.typography.bodySmall, lineHeight = 18.sp)
+                        }
+                        Text("مخططة", color = AgentPalette.TextSecondary, style = MaterialTheme.typography.labelSmall)
+                    }
+                }
+                HorizontalDivider(color = AgentPalette.Border)
+                Text("سجل المهمة", color = AgentPalette.TextPrimary, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleSmall)
+                task.history.takeLast(4).forEach { event ->
+                    Row(verticalAlignment = Alignment.Top, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Box(Modifier.padding(top = 5.dp).size(7.dp).clip(CircleShape).background(accent))
+                        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                            Text(event.message, color = AgentPalette.TextSecondary, style = MaterialTheme.typography.bodySmall, lineHeight = 18.sp)
+                            Text(java.text.SimpleDateFormat("dd/MM HH:mm", java.util.Locale.getDefault()).format(java.util.Date(event.createdAtEpochMillis)), color = AgentPalette.TextSecondary.copy(alpha = 0.7f), style = MaterialTheme.typography.labelSmall)
+                        }
+                    }
+                }
+                when (task.status) {
+                    TaskStatus.DRAFT -> ReviewStageAction("مراجعة الخطة", "نقل البطاقة إلى مرحلة مراجعة الموافقة", AgentPalette.Sky, onAdvanceReview)
+                    TaskStatus.NEEDS_APPROVAL -> ReviewStageAction("اعتماد الخطة", "يعتمد الخطة فقط، ولا يبدأ تنفيذًا على الهاتف", AgentPalette.Amber, onAdvanceReview)
+                    TaskStatus.APPROVED_WAITING_FOR_ENGINE -> Surface(
+                        shape = RoundedCornerShape(15.dp),
+                        color = AgentPalette.MintDeep.copy(alpha = 0.65f),
+                        border = BorderStroke(1.dp, AgentPalette.Mint.copy(alpha = 0.24f))
+                    ) {
+                        Row(Modifier.padding(12.dp), verticalAlignment = Alignment.Top, horizontalArrangement = Arrangement.spacedBy(9.dp)) {
+                            Icon(Icons.Outlined.Lock, contentDescription = null, tint = AgentPalette.Mint, modifier = Modifier.size(18.dp))
+                            Text("اعتمدت الخطة. تنتظر البطاقة محرك تنفيذ حقيقيًا؛ لم يحدث أي إجراء على الجهاز.", color = AgentPalette.TextPrimary, style = MaterialTheme.typography.bodySmall, lineHeight = 19.sp)
+                        }
+                    }
+                    else -> Text("حالة تشغيل محجوزة لإصدار لاحق؛ هذا الإصدار لا يملك محركًا لكتابة هذه الحالة.", color = AgentPalette.TextSecondary, style = MaterialTheme.typography.bodySmall)
+                }
             }
         }
     }
+}
+
+@Composable
+private fun ReviewStageAction(label: String, subtitle: String, accent: Color, onClick: () -> Unit) {
+    Surface(
+        modifier = Modifier.fillMaxWidth().clickable(onClick = onClick),
+        shape = RoundedCornerShape(15.dp),
+        color = accent.copy(alpha = 0.12f),
+        border = BorderStroke(1.dp, accent.copy(alpha = 0.32f))
+    ) {
+        Row(Modifier.padding(13.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            Icon(Icons.Outlined.CheckCircle, contentDescription = null, tint = accent)
+            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                Text(label, color = accent, fontWeight = FontWeight.Bold)
+                Text(subtitle, color = AgentPalette.TextSecondary, style = MaterialTheme.typography.labelSmall, lineHeight = 17.sp)
+            }
+            Icon(Icons.Outlined.ChevronLeft, contentDescription = null, tint = accent)
+        }
+    }
+}
+
+private fun taskStatusLabel(status: TaskStatus): String = when (status) {
+    TaskStatus.DRAFT -> "مسودة"
+    TaskStatus.NEEDS_APPROVAL -> "تحتاج موافقة"
+    TaskStatus.APPROVED_WAITING_FOR_ENGINE -> "تنتظر المحرك"
+    TaskStatus.RUNNING -> "قيد التنفيذ"
+    TaskStatus.VERIFYING -> "التحقق"
+    TaskStatus.COMPLETED -> "مكتملة بعد التحقق"
+    TaskStatus.FAILED -> "فشلت"
+    TaskStatus.STOPPED -> "أوقفت"
+}
+
+private fun taskStatusAccent(status: TaskStatus): Color = when (status) {
+    TaskStatus.DRAFT -> AgentPalette.TextSecondary
+    TaskStatus.NEEDS_APPROVAL -> AgentPalette.Amber
+    TaskStatus.APPROVED_WAITING_FOR_ENGINE -> AgentPalette.Sky
+    TaskStatus.RUNNING -> AgentPalette.Sky
+    TaskStatus.VERIFYING -> AgentPalette.Amber
+    TaskStatus.COMPLETED -> AgentPalette.Mint
+    TaskStatus.FAILED -> AgentPalette.Danger
+    TaskStatus.STOPPED -> AgentPalette.TextSecondary
 }
 
 @Composable
