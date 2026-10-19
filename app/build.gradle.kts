@@ -20,7 +20,7 @@ android {
 
     buildTypes {
         debug {
-            applicationIdSuffix = ".debug"
+            applicationIdSuffix = ".ci"
             versionNameSuffix = "-debug"
         }
         release {
