@@ -48,6 +48,14 @@ data class TaskEvent(
     val createdAtEpochMillis: Long
 )
 
+data class ChatMessage(
+    val id: String,
+    val companionId: String,
+    val text: String,
+    val isUser: Boolean,
+    val createdAtEpochMillis: Long
+)
+
 object TaskLifecycle {
     /**
      * Review-only transitions shipped in this version.
