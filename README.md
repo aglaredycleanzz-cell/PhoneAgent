@@ -1,56 +1,81 @@
 # Phone Agent
 
-**A privacy-first Android task agent foundation.** Native Android UI, local task drafts, explicit permission boundaries, and reproducible APK builds through GitHub Actions.
+**وكيل أندرويد محلي، يبدأ بمبدأ الصلاحيات الصريحة.**
 
-> Current stage: foundation only. Tasks are saved locally as drafts. The app does not control other apps, capture screens, use the network, or request Accessibility permissions yet.
+Phone Agent هو تطبيق Android أصلي بواجهة عربية. الإصدار الأول يبني القاعدة الصحيحة قبل إضافة التحكم بالجهاز: واجهة واضحة، مسودات مهام محفوظة محليًا، وصف صريح للصلاحيات، وفحص وبناء APK تلقائيًا عبر GitHub Actions.
 
-## Product principles
+> **الحالة الحالية — Foundation 0.1:** يمكنك إنشاء مسودات نصية ومراجعتها وحذفها لاحقًا في الإصدارات القادمة. هذا الإصدار لا ينفّذ الأوامر، ولا يتحكم بالتطبيقات الأخرى، ولا يتصل بالإنترنت.
 
-- **Local by default:** task drafts stay in the app's private storage.
-- **No implied access:** the app does not claim permissions it has not requested or received.
-- **Human approval for sensitive actions:** future execution capabilities must be gated behind a clear review step.
-- **Auditable changes:** capability modules will be added one at a time with tests and documented permission requirements.
+## المزايا الحالية
 
-## Current features
+- واجهة عربية RTL بتصميم داكن مخصص باستخدام Kotlin وJetpack Compose.
+- شاشة رئيسية، قائمة مهام، وصفحة تشرح حدود الصلاحيات الفعلية.
+- حفظ المسودات في مساحة التطبيق الخاصة عبر SharedPreferences، مع حد أقصى 100 مسودة.
+- تطبيع النصوص وإزالة المسافات الزائدة وتحديد طول العنوان.
+- اختبارات وحدات لدوال تطبيع النص.
+- GitHub Actions لتشغيل الاختبارات وبناء APK تجريبي ورفعه كملف Artifact.
 
-- Native Kotlin + Jetpack Compose interface in Arabic.
-- Local task draft creation and persistence.
-- Dedicated tasks and security/readiness screens.
-- No runtime permissions requested in the initial manifest.
-- GitHub Actions workflow for unit tests and a debug APK artifact.
+## تنزيل APK من الهاتف
 
-## Build
+لا تحتاج إلى حاسوب لبناء النسخة التجريبية:
 
-A local Android SDK and JDK 17 are required.
+1. افتح تبويب [Actions](../../actions).
+2. اختر أحدث تشغيل ناجح باسم **Android CI**.
+3. من قسم **Artifacts** اختر **PhoneAgent-debug-apk**.
+4. نزّل الملف المضغوط واستخرج منه `app-debug.apk`، ثم افتحه على هاتفك وثبّته إذا سمح أندرويد بذلك.
+
+الـ APK الناتج نسخة **Debug** للتجربة، وليس إصدارًا إنتاجيًا موقّعًا. إذا لم يظهر Artifact، فهذا يعني عادةً أن البناء لم ينجح بعد أو لم يكتمل.
+
+## البناء محليًا
+
+يتطلب JDK 17 وAndroid SDK API 36 وGradle 8.13:
 
 ```bash
-gradle :app:assembleDebug :app:testDebugUnitTest
+gradle --no-daemon :app:testDebugUnitTest
+gradle --no-daemon :app:assembleDebug
 ```
 
-The hosted workflow installs Gradle 8.13 and Android SDK API 36 and uploads `app-debug.apk` as a workflow artifact after a successful build.
+يُنتج APK في `app/build/outputs/apk/debug/app-debug.apk`.
 
-## Structure
+## حدود الأمان في هذا الإصدار
+
+- لا يوجد إذن `INTERNET` في بيان التطبيق.
+- لا توجد خدمة Accessibility أو صلاحيات overlay أو قارئ إشعارات.
+- لا توجد خدمة تعمل في الخلفية ولا منفّذ أوامر.
+- لا تُرسل مسودات المهام إلى خادم.
+- كل المسودات هي نصوص غير قابلة للتنفيذ؛ حفظ النص لا يؤدي إلى أي إجراء على الهاتف.
+
+هذه الحدود موثقة أيضًا في [SECURITY.md](SECURITY.md) و[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+
+## البنية
 
 ```
-app/
-  src/main/
-    java/io/phoneagent/mobile/
-      data/       # local task storage and model
-      ui/         # Compose screens and visual theme
-      MainActivity.kt
-    res/          # app icon resources and theme
+app/src/main/java/io/phoneagent/mobile/
+  MainActivity.kt
+  data/
+    AgentTask.kt
+    TaskStore.kt
+  ui/
+    PhoneAgentApp.kt
+    PhoneAgentTheme.kt
+app/src/test/java/io/phoneagent/mobile/data/
+  AgentTaskTest.kt
 .github/workflows/android-ci.yml
-docs/ARCHITECTURE.md
 ```
 
-## Roadmap
+## المسار المقترح
 
-1. **Foundation (current):** UI, local drafts, security disclosure, CI build.
-2. Accessibility bridge: opt-in service, clear system setting hand-off, capability status.
-3. Action engine: allowlisted actions, previews, bounded execution, cancellation and audit log.
-4. Optional AI connection: documented endpoint, user-managed credentials, minimal data transfer and explicit external-service disclosure.
-5. Device-side validation and release signing.
+1. **الأساس الحالي:** الواجهة، المسودات المحلية، وحدود الأمان، والبناء الآلي.
+2. **خدمة إمكانية الوصول:** تُضاف كخدمة مستقلة اختيارية، ولا تُفعّل إلا من إعدادات أندرويد بيد المستخدم.
+3. **محرك إجراءات محدود:** قائمة سماح للإجراءات، معاينة قبل التنفيذ، موافقة على العمليات الحساسة، إلغاء وسجل تدقيق.
+4. **اتصال اختياري بنموذج ذكاء اصطناعي:** توضيح ما يُرسل للخدمة، تخزين بيانات الاعتماد خارج الكود، وإبقاء الاتصال معطّلًا افتراضيًا.
 
-## Security
+كل مرحلة ستُختبر قبل الانتقال إلى المرحلة التالية. لا ندّعي وجود تحكم هاتفي قبل تنفيذه واختباره على جهاز فعلي.
 
-See [SECURITY.md](SECURITY.md) and [the architecture notes](docs/ARCHITECTURE.md). Never commit API keys, access tokens, keystores, or personal data.
+## التقنية
+
+- Android native / Kotlin
+- Jetpack Compose + Material 3
+- Android Gradle Plugin 8.13.2 / Gradle 8.13
+- Kotlin 2.2.21 / JDK 17 / Android SDK 36
+- MIT License
