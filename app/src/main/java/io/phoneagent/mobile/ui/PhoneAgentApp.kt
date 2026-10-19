@@ -71,7 +71,6 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
-import androidx.compose.ui.graphics.Stroke
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.text.font.FontWeight
@@ -485,14 +484,14 @@ private fun CompanionStage(persona: AvatarPersona) {
 }
 
 @Composable
-private fun AvatarPortrait(persona: AvatarPersona, size: Dp) {
+private fun AvatarPortrait(persona: AvatarPersona, diameter: Dp) {
     Canvas(
         modifier = Modifier
-            .size(size)
+            .size(diameter)
             .clip(CircleShape)
     ) {
-        val w = size.width
-        val h = size.height
+        val w = this.size.width
+        val h = this.size.height
         drawCircle(
             brush = Brush.radialGradient(
                 colors = listOf(
