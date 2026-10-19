@@ -1,8 +1,7 @@
 package io.phoneagent.mobile.data
 
 /**
- * A task in version 0.1 is only a user-authored draft.
- * It has no executable command, permission grant, or execution state.
+ * A task is user-authored text until a real, permission-gated executor is implemented.
  */
 data class AgentTask(
     val id: String,
@@ -15,11 +14,17 @@ enum class TaskStatus {
     DRAFT
 }
 
-const val MAX_TASK_TITLE_LENGTH = 160
+data class ChatMessage(
+    val id: String,
+    val companionId: String,
+    val text: String,
+    val isUser: Boolean,
+    val createdAtEpochMillis: Long
+)
 
-/**
- * Normalizes user input without interpreting it as an executable instruction.
- */
+const val MAX_TASK_TITLE_LENGTH = 160
+const val MAX_CHAT_MESSAGE_LENGTH = 2000
+
 fun normalizeTaskTitle(raw: String): String {
     val output = StringBuilder()
     var pendingSpace = false
@@ -36,3 +41,6 @@ fun normalizeTaskTitle(raw: String): String {
 
     return output.toString().take(MAX_TASK_TITLE_LENGTH)
 }
+
+fun normalizeChatText(raw: String): String =
+    raw.trim().take(MAX_CHAT_MESSAGE_LENGTH)
