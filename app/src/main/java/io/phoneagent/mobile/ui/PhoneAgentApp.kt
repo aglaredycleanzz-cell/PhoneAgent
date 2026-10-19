@@ -432,7 +432,7 @@ private fun CompanionStage(persona: AvatarPersona) {
                         .size(144.dp)
                         .border(1.dp, persona.accent.copy(alpha = 0.24f), CircleShape)
                 )
-                AvatarPortrait(persona = persona, size = 132.dp)
+                AvatarPortrait(persona = persona, diameter = 132.dp)
                 Box(
                     modifier = Modifier
                         .align(Alignment.TopEnd)
