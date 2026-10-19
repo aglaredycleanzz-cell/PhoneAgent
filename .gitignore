@@ -1,0 +1,18 @@
+# Gradle / Android build outputs
+.gradle/
+**/build/
+local.properties
+*.iml
+.idea/
+.DS_Store
+
+# Signing material and local secrets
+*.jks
+*.keystore
+keystore.properties
+.env
+.env.*
+secrets.properties
+
+# Editor / OS noise
+Thumbs.db
