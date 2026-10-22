@@ -6,6 +6,7 @@
 - The release build variant uses application ID io.phoneagent.mobile and must be signed by one permanent keystore.
 - A release APK is published as a workflow artifact only after the workflow verifies that its signer certificate SHA-256 equals the certificate exported from the configured keystore.
 - Never commit the keystore, the Base64 representation, store password, key password, or access tokens to Git.
+- Signing secrets are stored in a dedicated GitHub Actions environment named release-signing, not as ordinary repository secrets. Only the release job can access that environment.
 
 ## Why the previous builds conflict
 
@@ -58,9 +59,11 @@ cat "$HOME/phoneagent-signing/phoneagent-release.base64"
 
 The last command prints a long line. Copy it directly into GitHub as the value of the secret named below. Do not paste that line into this chat or into repository files.
 
-## 3. Add repository secrets
+## 3. Create a protected signing environment
 
-Open the repository on GitHub, then go to **Settings → Secrets and variables → Actions → Secrets → New repository secret**. Create these four secrets:
+On the repository page, go to **Settings → Environments → New environment** and create an environment named **release-signing**. If the repository settings offer deployment branch restrictions, restrict this environment to main. Consider adding a required reviewer to protect release signing.
+
+Open the release-signing environment and add these four **environment secrets**:
 
 | Secret name | Value |
 |---|---|
@@ -69,13 +72,13 @@ Open the repository on GitHub, then go to **Settings → Secrets and variables �
 | PHONEAGENT_KEY_ALIAS | phoneagent-release |
 | PHONEAGENT_KEY_PASSWORD | Password for that key alias |
 
-GitHub documents this process in [Using secrets in GitHub Actions](https://docs.github.com/en/actions/how-tos/write-workflows/choose-what-workflows-do/use-secrets).
+GitHub's current guide explains [using Actions secrets](https://docs.github.com/en/actions/how-tos/write-workflows/choose-what-workflows-do/use-secrets) and [deployment environments](https://docs.github.com/en/actions/how-tos/deploy/configure-and-manage-deployments/manage-environments).
 
-The workflow intentionally does not access signing secrets from pull-request builds. It only attempts a signed release on a push to main or a manual workflow run selected on main.
+The workflow never exposes signing secrets to pull-request jobs. The separate release job only runs on a push to main or a manual workflow run selected on main.
 
 ## 4. Verify the first stable release
 
-After this pull request is merged and all four secrets exist:
+After this pull request is merged and all four environment secrets exist:
 
 1. Open **Actions → Android CI → Run workflow** and select main, or push a later approved change to main.
 2. Confirm the job passes **Build stable signed release APK** and **Verify APK signature matches the configured keystore**.

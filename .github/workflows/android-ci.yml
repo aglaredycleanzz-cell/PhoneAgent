@@ -16,7 +16,7 @@ concurrency:
 
 jobs:
   verify:
-    name: Verify, then optionally build a stable release
+    name: Verify source and compile CI variant
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
@@ -59,11 +59,49 @@ jobs:
       - name: Compile CI-only debug APK (not distributed)
         run: gradle --no-daemon :app:assembleDebug
 
-      # Never expose signing material to pull-request builds. Release signing
-      # only runs on main pushes or manual runs with main selected as the ref.
+  release:
+    name: Build and verify stable signed release
+    needs: verify
+    if: ${{ github.ref == 'refs/heads/main' && github.event_name != 'pull_request' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: release-signing
+    env:
+      ANDROID_HOME: /usr/local/lib/android/sdk
+      ANDROID_SDK_ROOT: /usr/local/lib/android/sdk
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v7
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Install Android SDK packages
+        shell: bash
+        run: |
+          set -euo pipefail
+          SDKMANAGER="$(find "$ANDROID_HOME/cmdline-tools" -type f -name sdkmanager -print -quit)"
+          if [ -z "$SDKMANAGER" ]; then
+            echo "Could not locate sdkmanager under $ANDROID_HOME/cmdline-tools" >&2
+            exit 1
+          fi
+          set +o pipefail
+          yes | "$SDKMANAGER" --sdk_root="$ANDROID_HOME" --licenses >/dev/null
+          set -o pipefail
+          "$SDKMANAGER" --sdk_root="$ANDROID_HOME" "platforms;android-36" "build-tools;36.0.0"
+
+      - name: Set up Gradle 8.13
+        uses: gradle/actions/setup-gradle@v6
+        with:
+          gradle-version: '8.13'
+          cache-provider: basic
+
       - name: Prepare stable release signing key
         id: prepare_signing
-        if: ${{ github.ref == 'refs/heads/main' && github.event_name != 'pull_request' }}
         shell: bash
         env:
           PHONEAGENT_KEYSTORE_BASE64: ${{ secrets.PHONEAGENT_KEYSTORE_BASE64 }}
@@ -77,7 +115,7 @@ jobs:
                 -z "${PHONEAGENT_KEY_ALIAS:-}" ||
                 -z "${PHONEAGENT_KEY_PASSWORD:-}" ]]; then
             echo "ready=false" >> "$GITHUB_OUTPUT"
-            echo "::notice title=Stable signing is not configured::CI tests will pass, but no installable release APK will be published. Follow docs/ANDROID_SIGNING.md."
+            echo "::notice title=Stable signing is not configured::Tests pass, but no installable release APK will be published. Configure the release-signing environment using docs/ANDROID_SIGNING.md."
             exit 0
           fi
 
