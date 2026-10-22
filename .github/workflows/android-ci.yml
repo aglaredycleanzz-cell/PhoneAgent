@@ -16,7 +16,7 @@ concurrency:
 
 jobs:
   verify:
-    name: Verify and package
+    name: Verify, then optionally build a stable release
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
@@ -56,13 +56,103 @@ jobs:
       - name: Run unit tests
         run: gradle --no-daemon :app:testDebugUnitTest
 
-      - name: Build debug APK
+      - name: Compile CI-only debug APK (not distributed)
         run: gradle --no-daemon :app:assembleDebug
 
-      - name: Upload debug APK
+      # Never expose signing material to pull-request builds. Release signing
+      # only runs on main pushes or manual runs with main selected as the ref.
+      - name: Prepare stable release signing key
+        id: prepare_signing
+        if: ${{ github.ref == 'refs/heads/main' && github.event_name != 'pull_request' }}
+        shell: bash
+        env:
+          PHONEAGENT_KEYSTORE_BASE64: ${{ secrets.PHONEAGENT_KEYSTORE_BASE64 }}
+          PHONEAGENT_KEYSTORE_PASSWORD: ${{ secrets.PHONEAGENT_KEYSTORE_PASSWORD }}
+          PHONEAGENT_KEY_ALIAS: ${{ secrets.PHONEAGENT_KEY_ALIAS }}
+          PHONEAGENT_KEY_PASSWORD: ${{ secrets.PHONEAGENT_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${PHONEAGENT_KEYSTORE_BASE64:-}" ||
+                -z "${PHONEAGENT_KEYSTORE_PASSWORD:-}" ||
+                -z "${PHONEAGENT_KEY_ALIAS:-}" ||
+                -z "${PHONEAGENT_KEY_PASSWORD:-}" ]]; then
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            echo "::notice title=Stable signing is not configured::CI tests will pass, but no installable release APK will be published. Follow docs/ANDROID_SIGNING.md."
+            exit 0
+          fi
+
+          KEYSTORE_PATH="$RUNNER_TEMP/phoneagent-release.jks"
+          printf '%s' "$PHONEAGENT_KEYSTORE_BASE64" | base64 --decode > "$KEYSTORE_PATH"
+          chmod 600 "$KEYSTORE_PATH"
+
+          # Validate the store password and key alias without printing secrets.
+          keytool -list -keystore "$KEYSTORE_PATH" -storetype JKS \
+            -storepass "$PHONEAGENT_KEYSTORE_PASSWORD" \
+            -alias "$PHONEAGENT_KEY_ALIAS" >/dev/null
+
+          echo "PHONEAGENT_SIGNING_STORE_PATH=$KEYSTORE_PATH" >> "$GITHUB_ENV"
+          echo "ready=true" >> "$GITHUB_OUTPUT"
+
+      - name: Build stable signed release APK
+        if: ${{ steps.prepare_signing.outputs.ready == 'true' }}
+        env:
+          PHONEAGENT_SIGNING_STORE_PASSWORD: ${{ secrets.PHONEAGENT_KEYSTORE_PASSWORD }}
+          PHONEAGENT_SIGNING_KEY_ALIAS: ${{ secrets.PHONEAGENT_KEY_ALIAS }}
+          PHONEAGENT_SIGNING_KEY_PASSWORD: ${{ secrets.PHONEAGENT_KEY_PASSWORD }}
+          PHONEAGENT_VERSION_CODE: ${{ github.run_number }}
+          PHONEAGENT_VERSION_NAME: 0.2.${{ github.run_number }}
+        run: gradle --no-daemon :app:assembleRelease
+
+      - name: Verify APK signature matches the configured keystore
+        id: verify_stable_signature
+        if: ${{ steps.prepare_signing.outputs.ready == 'true' }}
+        shell: bash
+        env:
+          PHONEAGENT_SIGNING_STORE_PASSWORD: ${{ secrets.PHONEAGENT_KEYSTORE_PASSWORD }}
+          PHONEAGENT_SIGNING_KEY_ALIAS: ${{ secrets.PHONEAGENT_KEY_ALIAS }}
+        run: |
+          set -euo pipefail
+          APK_PATH="app/build/outputs/apk/release/app-release.apk"
+          if [[ ! -f "$APK_PATH" ]]; then
+            echo "Expected signed APK not found: $APK_PATH" >&2
+            exit 1
+          fi
+
+          KEYSTORE_SHA256="$(
+            keytool -exportcert \
+              -alias "$PHONEAGENT_SIGNING_KEY_ALIAS" \
+              -keystore "$PHONEAGENT_SIGNING_STORE_PATH" \
+              -storetype JKS \
+              -storepass "$PHONEAGENT_SIGNING_STORE_PASSWORD" |
+              sha256sum | awk '{print tolower($1)}'
+          )"
+          APK_SHA256="$(
+            "$ANDROID_HOME/build-tools/36.0.0/apksigner" verify --print-certs "$APK_PATH" |
+              awk -F': ' '/Signer #1 certificate SHA-256 digest:/ {
+                gsub(/:/, "", $2); print tolower($2); exit
+              }'
+          )"
+
+          if [[ -z "$APK_SHA256" || "$KEYSTORE_SHA256" != "$APK_SHA256" ]]; then
+            echo "APK signer does not match the configured release keystore." >&2
+            echo "Keystore certificate SHA-256: $KEYSTORE_SHA256" >&2
+            echo "APK certificate SHA-256: ${APK_SHA256:-missing}" >&2
+            exit 1
+          fi
+
+          echo "Verified stable signer certificate SHA-256: $APK_SHA256"
+          echo "fingerprint=$APK_SHA256" >> "$GITHUB_OUTPUT"
+
+      - name: Upload stable signed release APK
+        if: ${{ steps.verify_stable_signature.outcome == 'success' }}
         uses: actions/upload-artifact@v7
         with:
-          name: PhoneAgent-debug-apk
-          path: app/build/outputs/apk/debug/app-debug.apk
+          name: PhoneAgent-stable-release-apk
+          path: app/build/outputs/apk/release/app-release.apk
           if-no-files-found: error
           retention-days: 14
+
+      - name: Remove signing key from runner
+        if: always()
+        shell: bash
+        run: rm -f "$RUNNER_TEMP/phoneagent-release.jks"
