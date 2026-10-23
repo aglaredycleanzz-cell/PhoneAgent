@@ -56,8 +56,60 @@ jobs:
       - name: Run unit tests
         run: gradle --no-daemon :app:testDebugUnitTest
 
-      - name: Compile CI-only debug APK (not distributed)
-        run: gradle --no-daemon :app:assembleDebug
+      - name: Create disposable keystore for release-path test
+        id: test_signing
+        shell: bash
+        run: |
+          set -euo pipefail
+          KEYSTORE_PATH="$RUNNER_TEMP/phoneagent-ci-validation.jks"
+          keytool -genkeypair -noprompt \
+            -keystore "$KEYSTORE_PATH" \
+            -storetype JKS \
+            -alias phoneagent-ci-validation \
+            -keyalg RSA -keysize 2048 -validity 2 \
+            -storepass ci-only-password-12345 \
+            -keypass ci-only-password-12345 \
+            -dname "CN=PhoneAgent CI validation"
+          chmod 600 "$KEYSTORE_PATH"
+          echo "PHONEAGENT_SIGNING_STORE_PATH=$KEYSTORE_PATH" >> "$GITHUB_ENV"
+
+      - name: Validate release signing config and signer fingerprint
+        id: validate_test_signing
+        shell: bash
+        env:
+          PHONEAGENT_SIGNING_STORE_PASSWORD: ci-only-password-12345
+          PHONEAGENT_SIGNING_KEY_ALIAS: phoneagent-ci-validation
+          PHONEAGENT_SIGNING_KEY_PASSWORD: ci-only-password-12345
+          PHONEAGENT_VERSION_CODE: ${{ github.run_number }}
+          PHONEAGENT_VERSION_NAME: 0.2.${{ github.run_number }}-ci
+        run: |
+          set -euo pipefail
+          gradle --no-daemon :app:assembleRelease
+          APK_PATH="app/build/outputs/apk/release/app-release.apk"
+          KEYSTORE_SHA256="$(
+            keytool -exportcert \
+              -alias "$PHONEAGENT_SIGNING_KEY_ALIAS" \
+              -keystore "$PHONEAGENT_SIGNING_STORE_PATH" \
+              -storetype JKS \
+              -storepass "$PHONEAGENT_SIGNING_STORE_PASSWORD" |
+              sha256sum | awk '{print tolower($1)}'
+          )"
+          APK_SHA256="$(
+            "$ANDROID_HOME/build-tools/36.0.0/apksigner" verify --print-certs "$APK_PATH" |
+              awk -F': ' '/Signer #1 certificate SHA-256 digest:/ {
+                gsub(/:/, "", $2); print tolower($2); exit
+              }'
+          )"
+          if [[ -z "$APK_SHA256" || "$KEYSTORE_SHA256" != "$APK_SHA256" ]]; then
+            echo "Temporary release APK signature verification failed." >&2
+            exit 1
+          fi
+          echo "Release signing path passed with a disposable CI-only key; no APK artifact uploaded."
+
+      - name: Remove disposable signing key
+        if: always()
+        shell: bash
+        run: rm -f "$RUNNER_TEMP/phoneagent-ci-validation.jks"
 
   release:
     name: Build and verify stable signed release

@@ -4,7 +4,7 @@
 
 - The debug build variant uses application ID io.phoneagent.mobile.ci and is for CI validation only. Its runner-generated debug certificate is not stable and its APK must not be published as an installable update.
 - The release build variant uses application ID io.phoneagent.mobile and must be signed by one permanent keystore.
-- A release APK is published as a workflow artifact only after the workflow verifies that its signer certificate SHA-256 equals the certificate exported from the configured keystore.
+- CI tests the release-signing configuration with a disposable, runner-only key and verifies its APK fingerprint; that test APK is never uploaded. A distributable release APK is published only after the release job verifies that its signer certificate SHA-256 equals the certificate exported from the permanent configured keystore.
 - Never commit the keystore, the Base64 representation, store password, key password, or access tokens to Git.
 - Signing secrets are stored in a dedicated GitHub Actions environment named release-signing, not as ordinary repository secrets. Only the release job can access that environment.
 
