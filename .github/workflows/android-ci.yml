@@ -16,7 +16,7 @@ concurrency:
 
 jobs:
   verify:
-    name: Verify and package
+    name: Verify source and compile CI variant
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
@@ -56,13 +56,193 @@ jobs:
       - name: Run unit tests
         run: gradle --no-daemon :app:testDebugUnitTest
 
-      - name: Build debug APK
-        run: gradle --no-daemon :app:assembleDebug
+      - name: Create disposable keystore for release-path test
+        id: test_signing
+        shell: bash
+        run: |
+          set -euo pipefail
+          KEYSTORE_PATH="$RUNNER_TEMP/phoneagent-ci-validation.jks"
+          keytool -genkeypair -noprompt \
+            -keystore "$KEYSTORE_PATH" \
+            -storetype JKS \
+            -alias phoneagent-ci-validation \
+            -keyalg RSA -keysize 2048 -validity 2 \
+            -storepass ci-only-password-12345 \
+            -keypass ci-only-password-12345 \
+            -dname "CN=PhoneAgent CI validation"
+          chmod 600 "$KEYSTORE_PATH"
+          echo "PHONEAGENT_SIGNING_STORE_PATH=$KEYSTORE_PATH" >> "$GITHUB_ENV"
 
-      - name: Upload debug APK
+      - name: Validate release signing config and signer fingerprint
+        id: validate_test_signing
+        shell: bash
+        env:
+          PHONEAGENT_SIGNING_STORE_PASSWORD: ci-only-password-12345
+          PHONEAGENT_SIGNING_KEY_ALIAS: phoneagent-ci-validation
+          PHONEAGENT_SIGNING_KEY_PASSWORD: ci-only-password-12345
+          PHONEAGENT_VERSION_CODE: ${{ github.run_number }}
+          PHONEAGENT_VERSION_NAME: 0.2.${{ github.run_number }}-ci
+        run: |
+          set -euo pipefail
+          gradle --no-daemon :app:assembleRelease
+          APK_PATH="app/build/outputs/apk/release/app-release.apk"
+          KEYSTORE_SHA256="$(
+            keytool -exportcert \
+              -alias "$PHONEAGENT_SIGNING_KEY_ALIAS" \
+              -keystore "$PHONEAGENT_SIGNING_STORE_PATH" \
+              -storetype JKS \
+              -storepass "$PHONEAGENT_SIGNING_STORE_PASSWORD" |
+              sha256sum | awk '{print tolower($1)}'
+          )"
+          APK_SHA256="$(
+            "$ANDROID_HOME/build-tools/36.0.0/apksigner" verify --print-certs "$APK_PATH" |
+              awk -F': ' '/Signer #1 certificate SHA-256 digest:/ {
+                gsub(/:/, "", $2); print tolower($2); exit
+              }'
+          )"
+          if [[ -z "$APK_SHA256" || "$KEYSTORE_SHA256" != "$APK_SHA256" ]]; then
+            echo "Temporary release APK signature verification failed." >&2
+            exit 1
+          fi
+          echo "Release signing path passed with a disposable CI-only key; no APK artifact uploaded."
+
+      - name: Remove disposable signing key
+        if: always()
+        shell: bash
+        run: rm -f "$RUNNER_TEMP/phoneagent-ci-validation.jks"
+
+  release:
+    name: Build and verify stable signed release
+    needs: verify
+    if: ${{ github.ref == 'refs/heads/main' && github.event_name != 'pull_request' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: release-signing
+    env:
+      ANDROID_HOME: /usr/local/lib/android/sdk
+      ANDROID_SDK_ROOT: /usr/local/lib/android/sdk
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v7
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Install Android SDK packages
+        shell: bash
+        run: |
+          set -euo pipefail
+          SDKMANAGER="$(find "$ANDROID_HOME/cmdline-tools" -type f -name sdkmanager -print -quit)"
+          if [ -z "$SDKMANAGER" ]; then
+            echo "Could not locate sdkmanager under $ANDROID_HOME/cmdline-tools" >&2
+            exit 1
+          fi
+          set +o pipefail
+          yes | "$SDKMANAGER" --sdk_root="$ANDROID_HOME" --licenses >/dev/null
+          set -o pipefail
+          "$SDKMANAGER" --sdk_root="$ANDROID_HOME" "platforms;android-36" "build-tools;36.0.0"
+
+      - name: Set up Gradle 8.13
+        uses: gradle/actions/setup-gradle@v6
+        with:
+          gradle-version: '8.13'
+          cache-provider: basic
+
+      - name: Prepare stable release signing key
+        id: prepare_signing
+        shell: bash
+        env:
+          PHONEAGENT_KEYSTORE_BASE64: ${{ secrets.PHONEAGENT_KEYSTORE_BASE64 }}
+          PHONEAGENT_KEYSTORE_PASSWORD: ${{ secrets.PHONEAGENT_KEYSTORE_PASSWORD }}
+          PHONEAGENT_KEY_ALIAS: ${{ secrets.PHONEAGENT_KEY_ALIAS }}
+          PHONEAGENT_KEY_PASSWORD: ${{ secrets.PHONEAGENT_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${PHONEAGENT_KEYSTORE_BASE64:-}" ||
+                -z "${PHONEAGENT_KEYSTORE_PASSWORD:-}" ||
+                -z "${PHONEAGENT_KEY_ALIAS:-}" ||
+                -z "${PHONEAGENT_KEY_PASSWORD:-}" ]]; then
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            echo "::notice title=Stable signing is not configured::Tests pass, but no installable release APK will be published. Configure the release-signing environment using docs/ANDROID_SIGNING.md."
+            exit 0
+          fi
+
+          KEYSTORE_PATH="$RUNNER_TEMP/phoneagent-release.jks"
+          printf '%s' "$PHONEAGENT_KEYSTORE_BASE64" | base64 --decode > "$KEYSTORE_PATH"
+          chmod 600 "$KEYSTORE_PATH"
+
+          # Validate the store password and key alias without printing secrets.
+          keytool -list -keystore "$KEYSTORE_PATH" -storetype JKS \
+            -storepass "$PHONEAGENT_KEYSTORE_PASSWORD" \
+            -alias "$PHONEAGENT_KEY_ALIAS" >/dev/null
+
+          echo "PHONEAGENT_SIGNING_STORE_PATH=$KEYSTORE_PATH" >> "$GITHUB_ENV"
+          echo "ready=true" >> "$GITHUB_OUTPUT"
+
+      - name: Build stable signed release APK
+        if: ${{ steps.prepare_signing.outputs.ready == 'true' }}
+        env:
+          PHONEAGENT_SIGNING_STORE_PASSWORD: ${{ secrets.PHONEAGENT_KEYSTORE_PASSWORD }}
+          PHONEAGENT_SIGNING_KEY_ALIAS: ${{ secrets.PHONEAGENT_KEY_ALIAS }}
+          PHONEAGENT_SIGNING_KEY_PASSWORD: ${{ secrets.PHONEAGENT_KEY_PASSWORD }}
+          PHONEAGENT_VERSION_CODE: ${{ github.run_number }}
+          PHONEAGENT_VERSION_NAME: 0.2.${{ github.run_number }}
+        run: gradle --no-daemon :app:assembleRelease
+
+      - name: Verify APK signature matches the configured keystore
+        id: verify_stable_signature
+        if: ${{ steps.prepare_signing.outputs.ready == 'true' }}
+        shell: bash
+        env:
+          PHONEAGENT_SIGNING_STORE_PASSWORD: ${{ secrets.PHONEAGENT_KEYSTORE_PASSWORD }}
+          PHONEAGENT_SIGNING_KEY_ALIAS: ${{ secrets.PHONEAGENT_KEY_ALIAS }}
+        run: |
+          set -euo pipefail
+          APK_PATH="app/build/outputs/apk/release/app-release.apk"
+          if [[ ! -f "$APK_PATH" ]]; then
+            echo "Expected signed APK not found: $APK_PATH" >&2
+            exit 1
+          fi
+
+          KEYSTORE_SHA256="$(
+            keytool -exportcert \
+              -alias "$PHONEAGENT_SIGNING_KEY_ALIAS" \
+              -keystore "$PHONEAGENT_SIGNING_STORE_PATH" \
+              -storetype JKS \
+              -storepass "$PHONEAGENT_SIGNING_STORE_PASSWORD" |
+              sha256sum | awk '{print tolower($1)}'
+          )"
+          APK_SHA256="$(
+            "$ANDROID_HOME/build-tools/36.0.0/apksigner" verify --print-certs "$APK_PATH" |
+              awk -F': ' '/Signer #1 certificate SHA-256 digest:/ {
+                gsub(/:/, "", $2); print tolower($2); exit
+              }'
+          )"
+
+          if [[ -z "$APK_SHA256" || "$KEYSTORE_SHA256" != "$APK_SHA256" ]]; then
+            echo "APK signer does not match the configured release keystore." >&2
+            echo "Keystore certificate SHA-256: $KEYSTORE_SHA256" >&2
+            echo "APK certificate SHA-256: ${APK_SHA256:-missing}" >&2
+            exit 1
+          fi
+
+          echo "Verified stable signer certificate SHA-256: $APK_SHA256"
+          echo "fingerprint=$APK_SHA256" >> "$GITHUB_OUTPUT"
+
+      - name: Upload stable signed release APK
+        if: ${{ steps.verify_stable_signature.outcome == 'success' }}
         uses: actions/upload-artifact@v7
         with:
-          name: PhoneAgent-debug-apk
-          path: app/build/outputs/apk/debug/app-debug.apk
+          name: PhoneAgent-stable-release-apk
+          path: app/build/outputs/apk/release/app-release.apk
           if-no-files-found: error
           retention-days: 14
+
+      - name: Remove signing key from runner
+        if: always()
+        shell: bash
+        run: rm -f "$RUNNER_TEMP/phoneagent-release.jks"
